@@ -1,0 +1,42 @@
+<!doctype html>
+<html lang="vi"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>318Pro Bluetooth Debug</title>
+<style>body{font:15px system-ui,sans-serif;max-width:850px;margin:25px auto;padding:0 16px;background:#f7f8fa;color:#17202a}section{background:#fff;border:1px solid #ddd;border-radius:10px;padding:15px;margin:14px 0}h1{font-size:24px}h2{font-size:18px}label{display:block;margin:10px 0 4px}input,textarea,select{font:inherit;box-sizing:border-box;width:100%;padding:9px;border:1px solid #aaa;border-radius:6px}button{margin:7px 5px 7px 0;padding:9px 12px;border:0;border-radius:6px;background:#1357b7;color:white;cursor:pointer}button:disabled{background:#999}small{color:#555}pre{white-space:pre-wrap;overflow-wrap:anywhere;background:#111827;color:#d7fbe2;border-radius:7px;padding:12px;min-height:85px}</style></head><body>
+<h1>318Pro – kiểm tra Bluetooth từ Web</h1>
+<p>Chạy trên <b>localhost</b> hoặc <b>HTTPS</b>. Chỉ gửi lệnh tới máy in của bạn. Thử trên Chrome/Edge. Không mặc định máy hỗ trợ ESC/POS.</p>
+<section><h2>A. Bluetooth BLE</h2>
+<label>Service UUID được phép truy cập (phân cách bằng dấu phẩy)</label>
+<input id="services" value="0000ffe0-0000-1000-8000-00805f9b34fb,0000fff0-0000-1000-8000-00805f9b34fb,0000ff00-0000-1000-8000-00805f9b34fb" />
+<small>Chỉ là các UUID thường gặp để dò, không phải UUID đã xác nhận của 318Pro. Thêm UUID lấy từ app nRF Connect nếu cần.</small><br>
+<button id="bleBtn">1. Chọn & kết nối BLE</button><button id="scanBtn" disabled>2. Liệt kê service/characteristic</button>
+<label>Characteristic để ghi</label><select id="bleChars"><option value="">Chưa tìm thấy</option></select>
+<label>BLE chunk size (bytes, mặc định an toàn 20)</label><input id="chunk" type="number" min="1" max="512" value="20" /></section>
+<section><h2>B. Bluetooth Classic SPP (Chrome/Edge máy tính)</h2>
+<p>Ghép đôi máy in bằng Bluetooth của hệ điều hành trước. Trên Windows có thể cần mã PIN <code>0000</code>.</p>
+<button id="serialBtn">Chọn cổng SPP / Serial</button><button id="serialClose" disabled>Đóng cổng</button>
+</section>
+<section><h2>C. Gửi lệnh thử</h2><label>Đường truyền</label><select id="route"><option value="ble">BLE GATT</option><option value="serial">Classic SPP / Web Serial</option></select>
+<label>Nội dung ASCII (không dùng tiếng Việt có dấu ở bước đầu)</label><textarea id="message" rows="3">HELLO 318PRO\nTEST PRINT\n\n</textarea>
+<button id="textBtn">Gửi thử ESC/POS text</button>
+<label>Hex bytes (ví dụ ESC @ + HELLO + LF = 1B 40 48 45 4C 4C 4F 0A)</label><textarea id="hex" rows="3">1B 40 48 45 4C 4C 4F 0A 0A</textarea><br><button id="hexBtn">Gửi hex</button>
+<p><small>Chỉ thử ESC/POS nếu chấp nhận rằng máy có thể không hiểu. Không thử lệnh cập nhật firmware, xóa bộ nhớ hoặc lệnh không rõ nguồn.</small></p></section>
+<section><h2>Nhật ký (copy gửi lại để phân tích)</h2><button id="copyBtn">Copy log</button><pre id="log"></pre></section>
+<script>
+'use strict';
+const $=id=>document.getElementById(id);let device=null,server=null,bleWrites=[],port=null;
+const log=(...a)=>{const s=a.map(v=>typeof v==='string'?v:JSON.stringify(v)).join(' ');$('log').textContent+=new Date().toLocaleTimeString()+' '+s+'\n';};
+const fail=e=>log('ERROR',e?.name||'',e?.message||String(e));
+function UUID(s){s=s.trim().toLowerCase();if(/^0x[0-9a-f]{4}$/.test(s))s=s.slice(2);if(/^[0-9a-f]{4}$/.test(s))return '0000'+s+'-0000-1000-8000-00805f9b34fb';if(/^[0-9a-f]{8}$/.test(s))return s+'-0000-1000-8000-00805f9b34fb';if(!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/.test(s))throw Error('UUID không hợp lệ: '+s);return s;}
+function allowed(){return [...new Set($('services').value.split(',').filter(s=>s.trim()).map(UUID))];}
+$('bleBtn').onclick=async()=>{try{if(!navigator.bluetooth)throw Error('Web Bluetooth không được hỗ trợ; thử Chrome Android hoặc Chrome/Edge desktop, HTTPS/localhost.');const opts={acceptAllDevices:true,optionalServices:allowed()};device=await navigator.bluetooth.requestDevice(opts);log('DEVICE',device.name||'(không tên)',device.id);device.addEventListener('gattserverdisconnected',()=>log('BLE disconnected'));server=await device.gatt.connect();log('BLE connected');$('scanBtn').disabled=false;await scan();}catch(e){fail(e);}};
+async function scan(){if(!server?.connected)throw Error('BLE chưa kết nối');bleWrites=[];$('bleChars').innerHTML='';const svcs=await server.getPrimaryServices();log('SERVICES visible',svcs.length);for(const s of svcs){log('SERVICE',s.uuid);try{for(const c of await s.getCharacteristics()){const p=c.properties;log('  CHAR',c.uuid,'read='+p.read,'write='+p.write,'writeNoResp='+p.writeWithoutResponse,'notify='+p.notify);if(p.write||p.writeWithoutResponse){bleWrites.push(c);const o=document.createElement('option');o.value=String(bleWrites.length-1);o.textContent=s.uuid+' / '+c.uuid+' ['+(p.write?'write ':'')+(p.writeWithoutResponse?'noResponse':'')+']';$('bleChars').append(o);}}}catch(e){fail(e);}}log('Writable characteristics',bleWrites.length);}
+$('scanBtn').onclick=async()=>{try{await scan();}catch(e){fail(e);}};
+$('serialBtn').onclick=async()=>{try{if(!navigator.serial)throw Error('Web Serial không hỗ trợ trong trình duyệt này. Dùng Chrome/Edge desktop.');port=await navigator.serial.requestPort();await port.open({baudRate:9600});$('serialClose').disabled=false;log('SERIAL opened (baudRate là cấu hình API; SPP có thể không dùng baudRate vật lý)');}catch(e){fail(e);}};
+$('serialClose').onclick=async()=>{try{await port?.close();port=null;$('serialClose').disabled=true;log('SERIAL closed');}catch(e){fail(e);}};
+const sleep=ms=>new Promise(r=>setTimeout(r,ms));
+async function send(bytes){if($('route').value==='serial'){if(!port?.writable)throw Error('Chưa kết nối Web Serial');const w=port.writable.getWriter();try{await w.write(bytes);}finally{w.releaseLock();}log('SERIAL sent',bytes.length,'bytes');return;}
+ const c=bleWrites[Number($('bleChars').value)];if(!c||!device?.gatt?.connected)throw Error('Chưa có BLE characteristic Write');const n=Number($('chunk').value);if(!Number.isInteger(n)||n<1||n>512)throw Error('Chunk size không hợp lệ');for(let i=0;i<bytes.length;i+=n){const chunk=bytes.slice(i,i+n);if(c.properties.writeWithoutResponse)await c.writeValueWithoutResponse(chunk);else if(c.properties.write)await c.writeValueWithResponse(chunk);else throw Error('Characteristic không có Write');await sleep(35);}log('BLE sent',bytes.length,'bytes to',c.uuid);}
+$('textBtn').onclick=async()=>{try{const msg=$('message').value.replace(/\\n/g,'\n');if(/[^\x00-\x7F]/.test(msg))throw Error('Chỉ dùng ASCII để thử; tiếng Việt cần bảng mã hoặc raster image');const bytes=new Uint8Array([0x1b,0x40,...new TextEncoder().encode(msg)]);await send(bytes);}catch(e){fail(e);}};
+$('hexBtn').onclick=async()=>{try{const str=$('hex').value.replace(/\s+/g,'');if(!str||str.length%2||!/^[0-9a-f]+$/i.test(str))throw Error('Hex sai định dạng');await send(Uint8Array.from(str.match(/.{2}/g),s=>parseInt(s,16)));}catch(e){fail(e);}};
+$('copyBtn').onclick=async()=>{try{await navigator.clipboard.writeText($('log').textContent);log('Copied');}catch(e){fail(e);}};
+log('Ready. isSecureContext='+isSecureContext+' Bluetooth='+!!navigator.bluetooth+' Serial='+!!navigator.serial);
+</script></body></html>
